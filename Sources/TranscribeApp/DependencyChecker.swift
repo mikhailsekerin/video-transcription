@@ -73,12 +73,20 @@ final class DependencyChecker: ObservableObject {
 
         // Rebuild the whole array so @Published fires a single clean update
         var updated = dependencies
-        updated[0].isPresent = brewResolved != nil
-        updated[0].resolvedPath = brewResolved
-        updated[1].isPresent = ffmpegResolved != nil
-        updated[1].resolvedPath = ffmpegResolved
-        updated[2].isPresent = whisperResolved != nil
-        updated[2].resolvedPath = whisperResolved
+        for i in updated.indices {
+            switch updated[i].id {
+            case "homebrew":
+                updated[i].isPresent = brewResolved != nil
+                updated[i].resolvedPath = brewResolved
+            case "ffmpeg":
+                updated[i].isPresent = ffmpegResolved != nil
+                updated[i].resolvedPath = ffmpegResolved
+            case "whisper":
+                updated[i].isPresent = whisperResolved != nil
+                updated[i].resolvedPath = whisperResolved
+            default: break
+            }
+        }
         dependencies = updated
 
         brewPath = brewResolved

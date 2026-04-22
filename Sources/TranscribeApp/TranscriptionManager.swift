@@ -69,7 +69,7 @@ class TranscriptionManager: ObservableObject {
 
     private func convertToWav(videoURL: URL) async throws -> URL {
         let wavURL = videoURL.deletingPathExtension().appendingPathExtension("wav")
-        try? FileManager.default.removeItem(at: wavURL)
+        try FileManager.default.removeItem(at: wavURL)
 
         appendLog("Converting video to WAV...\n")
         appendLog("ffmpeg -i \(videoURL.lastPathComponent) -vn -ac 1 -ar 16000 -af \"highpass=f=100,loudnorm\" -c:a pcm_s16le \(wavURL.lastPathComponent)\n\n")
@@ -184,7 +184,7 @@ class TranscriptionManager: ObservableObject {
             search = String(search[r.upperBound...])
         }
         if let t = latestT, totalDurationSec > 0 {
-            progress = min(t / totalDurationSec, 0.99)
+            progress = min(t / totalDurationSec, 1.0)
             progressLabel = formatTimeRange(t, of: totalDurationSec)
         }
     }
@@ -201,7 +201,7 @@ class TranscriptionManager: ObservableObject {
             search = String(search[arrowRange.upperBound...])
         }
         if let t = latestEnd {
-            progress = min(t / totalDurationSec, 0.99)
+            progress = min(t / totalDurationSec, 1.0)
             progressLabel = formatTimeRange(t, of: totalDurationSec)
         }
     }

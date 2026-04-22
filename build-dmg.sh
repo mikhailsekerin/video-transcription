@@ -12,7 +12,15 @@ swift build -c release
 echo "▸ Updating app bundle…"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
-cp .build/arm64-apple-macosx/release/TranscribeApp "$APP_BUNDLE/Contents/MacOS/TranscribeApp"
+
+# Find the binary in any architecture-specific build folder
+BINARY=$(find .build -name "TranscribeApp" -type f -path "*/release/*" 2>/dev/null | head -1)
+if [ -z "$BINARY" ]; then
+    echo "❌ Error: Release build produced no binary"
+    exit 1
+fi
+
+cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/TranscribeApp"
 cp Sources/TranscribeApp/Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 echo "▸ Code signing (ad-hoc)…"

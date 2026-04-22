@@ -466,6 +466,9 @@ struct PlainTextDocument: FileDocument {
         content = String(data: configuration.file.regularFileContents ?? Data(), encoding: .utf8) ?? ""
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        FileWrapper(regularFileWithContents: content.data(using: .utf8)!)
+        guard let data = content.data(using: .utf8) else {
+            throw NSError(domain: "FileWriteError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not encode content as UTF-8"])
+        }
+        return FileWrapper(regularFileWithContents: data)
     }
 }
