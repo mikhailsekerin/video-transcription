@@ -1,0 +1,25 @@
+# Swift / SPM
+.build/
+*.o
+*.d
+*.swp
+.swiftpm/
+
+# Xcode
+xcuserdata/
+*.xcodeproj/
+*.xcworkspace/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Compiled app binary (rebuilt by run.sh)
+TranscribeApp.app/Contents/MacOS/TranscribeApp
+
+# Generated audio / transcript files
+*.wav
+Downloads/
+
+# VS Code
+.vscode/
