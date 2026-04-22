@@ -9,17 +9,25 @@ struct ContentView: View {
     }
 
     @State private var videoURL: URL? = nil
-    @State private var language = "de"
-    @State private var model = "medium"
-    @State private var initialPrompt = ""
-    @State private var removeFiller = false
+    @AppStorage("language") private var language = "de"
+    @AppStorage("model") private var model = "medium"
+    @AppStorage("initialPrompt") private var initialPrompt = ""
+    @AppStorage("removeFiller") private var removeFiller = false
+    @AppStorage("useGPU") private var useGPU = false
+    @AppStorage("autoSave") private var autoSave = false
+    @AppStorage("recentFiles") private var recentFilesRaw = ""
     @State private var transcriptCopied = false
     @State private var isDropTargeted = false
+    @State private var isWindowDropTargeted = false
     @State private var isDropZoneHovered = false
     @State private var showFilePicker = false
     @State private var showSrtSavePicker = false
     @State private var showTxtSavePicker = false
     @State private var selectedTab = 0
+
+    private var recentFiles: [URL] {
+        recentFilesRaw.split(separator: "\n").compactMap { URL(string: String($0)) }
+    }
 
     private var isRunning: Bool {
         switch manager.step {
@@ -33,6 +41,16 @@ struct ContentView: View {
             headerBar
             Divider()
             mainContent
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 0)
+                .strokeBorder(Color.accentColor, lineWidth: 4)
+                .opacity(isWindowDropTargeted ? 1 : 0)
+                .allowsHitTesting(false)
+                .animation(.easeInOut(duration: 0.15), value: isWindowDropTargeted)
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isWindowDropTargeted) { providers in
+            handleDrop(providers)
         }
         .fileImporter(
             isPresented: $showFilePicker,
@@ -56,7 +74,15 @@ struct ContentView: View {
             defaultFilename: baseFilename + ".srt"
         ) { _ in }
         .onChange(of: manager.step) { newStep in
-            if case .done = newStep { selectedTab = 0 }
+            if case .done = newStep {
+                selectedTab = 0
+                if autoSave, let url = videoURL {
+                    writeOutputs(next: url)
+                }
+            }
+        }
+        .onChange(of: videoURL) { newURL in
+            if let url = newURL { addRecent(url) }
         }
     }
 
@@ -77,6 +103,22 @@ struct ContentView: View {
             }
 
             Spacer()
+
+            if !recentFiles.isEmpty {
+                Menu {
+                    ForEach(recentFiles, id: \.self) { url in
+                        Button(url.lastPathComponent) { videoURL = url }
+                    }
+                    Divider()
+                    Button("Clear Recent") { recentFilesRaw = "" }
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Recent videos")
+                .disabled(isRunning)
+            }
 
             Picker("Language", selection: $language) {
                 Text("German").tag("de")
@@ -113,7 +155,7 @@ struct ContentView: View {
             } else {
                 Button("Transcribe") {
                     guard let url = videoURL else { return }
-                    manager.run(videoURL: url, language: language, model: model, initialPrompt: initialPrompt, removeFiller: removeFiller)
+                    manager.run(videoURL: url, language: language, model: model, initialPrompt: initialPrompt, removeFiller: removeFiller, useGPU: useGPU)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(videoURL == nil)
@@ -210,13 +252,24 @@ struct ContentView: View {
                     .disabled(isRunning)
             }
 
-            Toggle(isOn: $removeFiller) {
-                Text("Remove filler words")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                explainedToggle(
+                    isOn: $removeFiller,
+                    title: "Remove filler words",
+                    subtitle: "Strips \"um\", \"uh\", \"like\", \"you know\" from the transcript."
+                )
+                explainedToggle(
+                    isOn: $useGPU,
+                    title: "Use GPU (Apple Silicon)",
+                    subtitle: "Much faster on M-series Macs, but accuracy can be lower and some ops may fall back to CPU."
+                )
+                explainedToggle(
+                    isOn: $autoSave,
+                    title: "Auto-save next to video",
+                    subtitle: "Writes .txt and .srt alongside the source video when transcription finishes."
+                )
             }
-            .toggleStyle(.checkbox)
-            .disabled(isRunning)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             // Status + progress
             statusBadge
@@ -423,6 +476,37 @@ struct ContentView: View {
 
     private var baseFilename: String {
         videoURL?.deletingPathExtension().lastPathComponent ?? "transcript"
+    }
+
+    @ViewBuilder
+    private func explainedToggle(isOn: Binding<Bool>, title: String, subtitle: String) -> some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .toggleStyle(.checkbox)
+        .disabled(isRunning)
+    }
+
+    private func addRecent(_ url: URL) {
+        var list = recentFiles.filter { $0 != url }
+        list.insert(url, at: 0)
+        if list.count > 5 { list = Array(list.prefix(5)) }
+        recentFilesRaw = list.map(\.absoluteString).joined(separator: "\n")
+    }
+
+    private func writeOutputs(next url: URL) {
+        let base = url.deletingPathExtension()
+        let txt = base.appendingPathExtension("txt")
+        let srt = base.appendingPathExtension("srt")
+        try? manager.txtContent.write(to: txt, atomically: true, encoding: .utf8)
+        try? manager.srtContent.write(to: srt, atomically: true, encoding: .utf8)
     }
 }
 

@@ -23,13 +23,14 @@ class TranscriptionManager: ObservableObject {
     let whisperPath: String
     private var currentProcess: Process?
     private var totalDurationSec: Double = 0
+    private var wasCancelled = false
 
     init(ffmpegPath: String, whisperPath: String) {
         self.ffmpegPath = ffmpegPath
         self.whisperPath = whisperPath
     }
 
-    func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false) {
+    func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false, useGPU: Bool = false) {
         log = ""
         srtContent = ""
         txtContent = ""
@@ -37,27 +38,36 @@ class TranscriptionManager: ObservableObject {
         progress = 0
         progressLabel = ""
         totalDurationSec = 0
+        wasCancelled = false
         step = .converting
 
         Task {
+            var wavToCleanup: URL?
             do {
                 let wavURL = try await convertToWav(videoURL: videoURL)
+                wavToCleanup = wavURL
                 progress = 0
                 progressLabel = ""
                 step = .transcribing
-                let srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt)
+                let srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: useGPU)
                 srtContent = srt
                 txtContent = srtToPlainText(srt, removeFiller: removeFiller)
                 progress = 1.0
                 step = .done
             } catch {
-                step = .failed(error.localizedDescription)
-                appendLog("Error: \(error.localizedDescription)")
+                if !wasCancelled {
+                    step = .failed(error.localizedDescription)
+                    appendLog("Error: \(error.localizedDescription)")
+                }
+            }
+            if let wav = wavToCleanup {
+                try? FileManager.default.removeItem(at: wav)
             }
         }
     }
 
     func cancel() {
+        wasCancelled = true
         currentProcess?.terminate()
         step = .idle
         progress = 0
@@ -69,7 +79,7 @@ class TranscriptionManager: ObservableObject {
 
     private func convertToWav(videoURL: URL) async throws -> URL {
         let wavURL = videoURL.deletingPathExtension().appendingPathExtension("wav")
-        try FileManager.default.removeItem(at: wavURL)
+        try? FileManager.default.removeItem(at: wavURL)
 
         appendLog("Converting video to WAV...\n")
         appendLog("ffmpeg -i \(videoURL.lastPathComponent) -vn -ac 1 -ar 16000 -af \"highpass=f=100,loudnorm\" -c:a pcm_s16le \(wavURL.lastPathComponent)\n\n")
@@ -84,14 +94,17 @@ class TranscriptionManager: ObservableObject {
 
     // MARK: – Transcription
 
-    private func transcribe(wavURL: URL, language: String, model: String, initialPrompt: String) async throws -> String {
+    private func transcribe(wavURL: URL, language: String, model: String, initialPrompt: String, useGPU: Bool) async throws -> String {
         let outputDir = wavURL.deletingLastPathComponent()
 
+        let device = useGPU ? "mps" : "cpu"
+        let fp16 = useGPU ? "True" : "False"
+
         appendLog("\nTranscribing with Whisper...\n")
-        appendLog("whisper \(wavURL.lastPathComponent) --language \(language) --model \(model) --device cpu --fp16 False --temperature 0 --condition_on_previous_text False --output_format srt\n\n")
+        appendLog("whisper \(wavURL.lastPathComponent) --language \(language) --model \(model) --device \(device) --fp16 \(fp16) --temperature 0 --condition_on_previous_text False --output_format srt\n\n")
 
         var args = [wavURL.path, "--language", language, "--model", model,
-                    "--device", "cpu", "--fp16", "False", "--temperature", "0",
+                    "--device", device, "--fp16", fp16, "--temperature", "0",
                     "--condition_on_previous_text", "False",
                     "--output_format", "srt", "--output_dir", outputDir.path]
         if !initialPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
