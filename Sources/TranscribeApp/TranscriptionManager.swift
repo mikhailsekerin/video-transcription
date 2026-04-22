@@ -30,7 +30,7 @@ class TranscriptionManager: ObservableObject {
         self.whisperPath = whisperPath
     }
 
-    func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false, useGPU: Bool = false) {
+    func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false, useGPU: Bool = false, trimSilence: Bool = false) {
         log = ""
         srtContent = ""
         txtContent = ""
@@ -44,7 +44,7 @@ class TranscriptionManager: ObservableObject {
         Task {
             var wavToCleanup: URL?
             do {
-                let wavURL = try await convertToWav(videoURL: videoURL)
+                let wavURL = try await convertToWav(videoURL: videoURL, trimSilence: trimSilence)
                 wavToCleanup = wavURL
                 progress = 0
                 progressLabel = ""
@@ -77,17 +77,23 @@ class TranscriptionManager: ObservableObject {
 
     // MARK: – Conversion
 
-    private func convertToWav(videoURL: URL) async throws -> URL {
-        let wavURL = videoURL.deletingPathExtension().appendingPathExtension("wav")
-        try? FileManager.default.removeItem(at: wavURL)
+    private func convertToWav(videoURL: URL, trimSilence: Bool) async throws -> URL {
+        let wavURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("wav")
 
-        appendLog("Converting video to WAV...\n")
-        appendLog("ffmpeg -i \(videoURL.lastPathComponent) -vn -ac 1 -ar 16000 -af \"highpass=f=100,loudnorm\" -c:a pcm_s16le \(wavURL.lastPathComponent)\n\n")
+        var audioFilter = "highpass=f=100,loudnorm"
+        if trimSilence {
+            audioFilter += ",silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-35dB"
+        }
+
+        appendLog("Converting video to WAV\(trimSilence ? " (silence trimming on)" : "")...\n")
+        appendLog("ffmpeg -i \(videoURL.lastPathComponent) -vn -ac 1 -ar 16000 -af \"\(audioFilter)\" -c:a pcm_s16le \(wavURL.lastPathComponent)\n\n")
 
         try await runProcess(
             launchPath: ffmpegPath,
             arguments: ["-i", videoURL.path, "-vn", "-ac", "1", "-ar", "16000",
-                        "-af", "highpass=f=100,loudnorm", "-c:a", "pcm_s16le", wavURL.path, "-y"]
+                        "-af", audioFilter, "-c:a", "pcm_s16le", wavURL.path, "-y"]
         )
         return wavURL
     }

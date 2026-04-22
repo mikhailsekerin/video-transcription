@@ -15,6 +15,7 @@ struct ContentView: View {
     @AppStorage("removeFiller") private var removeFiller = false
     @AppStorage("useGPU") private var useGPU = false
     @AppStorage("autoSave") private var autoSave = false
+    @AppStorage("trimSilence") private var trimSilence = false
     @AppStorage("recentFiles") private var recentFilesRaw = ""
     @State private var transcriptCopied = false
     @State private var isDropTargeted = false
@@ -155,7 +156,7 @@ struct ContentView: View {
             } else {
                 Button("Transcribe") {
                     guard let url = videoURL else { return }
-                    manager.run(videoURL: url, language: language, model: model, initialPrompt: initialPrompt, removeFiller: removeFiller, useGPU: useGPU)
+                    manager.run(videoURL: url, language: language, model: model, initialPrompt: initialPrompt, removeFiller: removeFiller, useGPU: useGPU, trimSilence: trimSilence)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(videoURL == nil)
@@ -262,6 +263,11 @@ struct ContentView: View {
                     isOn: $useGPU,
                     title: "Use GPU (Apple Silicon)",
                     subtitle: "Much faster on M-series Macs, but accuracy can be lower and some ops may fall back to CPU."
+                )
+                explainedToggle(
+                    isOn: $trimSilence,
+                    title: "Trim silence",
+                    subtitle: "Removes quiet gaps before transcribing — faster and fewer hallucinations. Note: SRT timestamps won't match the original video."
                 )
                 explainedToggle(
                     isOn: $autoSave,
