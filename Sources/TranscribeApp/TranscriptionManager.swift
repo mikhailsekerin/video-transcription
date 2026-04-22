@@ -104,7 +104,7 @@ class TranscriptionManager: ObservableObject {
         let outputDir = wavURL.deletingLastPathComponent()
 
         let device = useGPU ? "mps" : "cpu"
-        let fp16 = useGPU ? "True" : "False"
+        let fp16 = "False"  // MPS doesn't support fp16; CPU never did
 
         appendLog("\nTranscribing with Whisper...\n")
         appendLog("whisper \(wavURL.lastPathComponent) --language \(language) --model \(model) --device \(device) --fp16 \(fp16) --temperature 0 --condition_on_previous_text False --output_format srt\n\n")

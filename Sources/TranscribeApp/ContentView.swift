@@ -420,7 +420,21 @@ struct ContentView: View {
     // MARK: – SRT View
 
     private var srtView: some View {
-        Group {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "info.circle")
+                    .foregroundStyle(.secondary)
+                Text("SRT includes timecodes — import into VLC, Premiere, or Final Cut as subtitles. Note: timecodes won't match if Trim Silence was enabled.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.07))
+            Divider()
+            Group {
             if manager.srtContent.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "captions.bubble")
@@ -439,6 +453,7 @@ struct ContentView: View {
                         .textSelection(.enabled)
                 }
                 .background(Color(nsColor: .textBackgroundColor))
+            }
             }
         }
     }
