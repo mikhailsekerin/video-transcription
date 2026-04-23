@@ -14,10 +14,12 @@ class TranscriptionManager: ObservableObject {
     @Published var step: TranscriptionStep = .idle
     @Published var log: String = ""
     @Published var srtContent: String = ""
-    @Published var txtContent: String = ""
-    @Published var srtURL: URL? = nil
+    @Published var markdownContent: String = ""
+    @Published var mediaDurationSec: Double = 0
     @Published var progress: Double = 0        // 0.0–1.0
     @Published var progressLabel: String = ""  // e.g. "0:30 / 1:23"
+    @Published var isDownloadingModel = false
+    @Published var modelDownloadPercent: Int = 0
 
     let ffmpegPath: String
     let whisperPath: String
@@ -33,25 +35,40 @@ class TranscriptionManager: ObservableObject {
     func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false, useGPU: Bool = false, trimSilence: Bool = false) {
         log = ""
         srtContent = ""
-        txtContent = ""
-        srtURL = nil
+        markdownContent = ""
         progress = 0
         progressLabel = ""
         totalDurationSec = 0
+        mediaDurationSec = 0
+        isDownloadingModel = false
+        modelDownloadPercent = 0
         wasCancelled = false
         step = .converting
 
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("TranscribeApp-\(UUID().uuidString)")
+
         Task {
-            var wavToCleanup: URL?
             do {
-                let wavURL = try await convertToWav(videoURL: videoURL, trimSilence: trimSilence)
-                wavToCleanup = wavURL
+                try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+                let wavURL = try await convertToWav(videoURL: videoURL, workDir: workDir, trimSilence: trimSilence)
+                mediaDurationSec = totalDurationSec
                 progress = 0
                 progressLabel = ""
                 step = .transcribing
-                let srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: useGPU)
+                var effectiveGPU = useGPU
+                let srt: String
+                do {
+                    srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: effectiveGPU)
+                } catch TranscribeError.srtNotFound where effectiveGPU {
+                    appendLog("\n⚠️ GPU run produced no output — retrying on CPU…\n\n")
+                    effectiveGPU = false
+                    progress = 0
+                    progressLabel = ""
+                    srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: false)
+                }
                 srtContent = srt
-                txtContent = srtToPlainText(srt, removeFiller: removeFiller)
+                markdownContent = srtToMarkdown(srt, removeFiller: removeFiller)
                 progress = 1.0
                 step = .done
             } catch {
@@ -60,9 +77,7 @@ class TranscriptionManager: ObservableObject {
                     appendLog("Error: \(error.localizedDescription)")
                 }
             }
-            if let wav = wavToCleanup {
-                try? FileManager.default.removeItem(at: wav)
-            }
+            try? FileManager.default.removeItem(at: workDir)
         }
     }
 
@@ -77,14 +92,12 @@ class TranscriptionManager: ObservableObject {
 
     // MARK: – Conversion
 
-    private func convertToWav(videoURL: URL, trimSilence: Bool) async throws -> URL {
-        let wavURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("wav")
+    private func convertToWav(videoURL: URL, workDir: URL, trimSilence: Bool) async throws -> URL {
+        let wavURL = workDir.appendingPathComponent("audio").appendingPathExtension("wav")
 
         var audioFilter = "highpass=f=100,loudnorm"
         if trimSilence {
-            audioFilter += ",silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-35dB"
+            audioFilter += ",silenceremove=stop_periods=-1:stop_duration=1:stop_threshold=-35dB,asetpts=N/SR/TB"
         }
 
         appendLog("Converting video to WAV\(trimSilence ? " (silence trimming on)" : "")...\n")
@@ -121,11 +134,14 @@ class TranscriptionManager: ObservableObject {
         let srtURL = outputDir
             .appendingPathComponent(wavURL.deletingPathExtension().lastPathComponent)
             .appendingPathExtension("srt")
-        self.srtURL = srtURL
 
         guard FileManager.default.fileExists(atPath: srtURL.path),
               let content = try? String(contentsOf: srtURL, encoding: .utf8) else {
-            throw TranscribeError.srtNotFound(srtURL.path)
+            let dirListing = (try? FileManager.default.contentsOfDirectory(atPath: outputDir.path)) ?? []
+            let hint = dirListing.isEmpty
+                ? "Whisper produced no output. Check the Log tab for errors."
+                : "Directory contains: \(dirListing.joined(separator: ", "))"
+            throw TranscribeError.srtNotFound("\(srtURL.lastPathComponent) — \(hint)")
         }
         return content
     }
@@ -209,6 +225,17 @@ class TranscriptionManager: ObservableObject {
     }
 
     private func parseWhisperChunk(_ text: String) {
+        // Detect tqdm-style model download before any transcription output
+        if !text.contains(" --> ") {
+            if let pct = parseTqdmPercent(text) {
+                isDownloadingModel = true
+                modelDownloadPercent = pct
+                return
+            }
+        } else if isDownloadingModel {
+            isDownloadingModel = false
+        }
+
         guard totalDurationSec > 0 else { return }
         // Parse "[HH:MM:SS.mmm --> HH:MM:SS.mmm]" lines, track latest end time
         var search = text
@@ -223,6 +250,20 @@ class TranscriptionManager: ObservableObject {
             progress = min(t / totalDurationSec, 1.0)
             progressLabel = formatTimeRange(t, of: totalDurationSec)
         }
+    }
+
+    private func parseTqdmPercent(_ text: String) -> Int? {
+        // Matches e.g. "  0%|" or " 42%|" or "100%|"
+        var latest: Int? = nil
+        var search = text
+        while let r = search.range(of: "%|") {
+            let before = search[..<r.lowerBound]
+            let digits = before.reversed().prefix(while: { $0.isNumber })
+            let num = String(digits.reversed())
+            if let n = Int(num), n >= 0, n <= 100 { latest = n }
+            search = String(search[r.upperBound...])
+        }
+        return latest
     }
 
     // MARK: – Helpers
@@ -245,7 +286,27 @@ class TranscriptionManager: ObservableObject {
         return "\(fmt(current)) / \(fmt(total))"
     }
 
-    func srtToPlainText(_ srt: String, removeFiller: Bool = false) -> String {
+    func srtToMarkdown(_ srt: String, removeFiller: Bool = false) -> String {
+        let segments = parsedSegments(srt)
+        guard !segments.isEmpty else { return "" }
+
+        func stamp(_ s: Double) -> String {
+            let total = Int(s)
+            let h = total / 3600, m = (total % 3600) / 60, sec = total % 60
+            return h > 0 ? String(format: "[%d:%02d:%02d]", h, m, sec)
+                         : String(format: "[%d:%02d]", m, sec)
+        }
+
+        var lines: [String] = []
+        for seg in segments {
+            var text = seg.text
+            if removeFiller { text = stripFillerWords(text) }
+            lines.append("\(stamp(seg.start)) \(text)")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func parsedSegments(_ srt: String) -> [(start: Double, end: Double, text: String)] {
         let blocks = srt.components(separatedBy: "\n\n")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -266,31 +327,14 @@ class TranscriptionManager: ObservableObject {
             if !text.isEmpty { parsed.append((start, end, text)) }
         }
 
-        guard !parsed.isEmpty else { return "" }
-
         // Remove consecutive duplicate segments (Whisper hallucination loops)
         var deduped: [(start: Double, end: Double, text: String)] = []
         for segment in parsed {
-            let normalised = segment.text.trimmingCharacters(in: .punctuationCharacters)
-                .lowercased()
-            let prevNormalised = deduped.last?.text
-                .trimmingCharacters(in: .punctuationCharacters)
-                .lowercased()
-            if normalised != prevNormalised {
-                deduped.append(segment)
-            }
+            let norm = segment.text.trimmingCharacters(in: .punctuationCharacters).lowercased()
+            let prev = deduped.last?.text.trimmingCharacters(in: .punctuationCharacters).lowercased()
+            if norm != prev { deduped.append(segment) }
         }
-
-        var result = ""
-        for i in deduped.indices {
-            var text = deduped[i].text
-            if removeFiller { text = stripFillerWords(text) }
-            result += text
-            if i < deduped.count - 1 {
-                result += deduped[i + 1].start - deduped[i].end > 2.0 ? "\n\n" : " "
-            }
-        }
-        return result
+        return deduped
     }
 
     private func stripFillerWords(_ text: String) -> String {
