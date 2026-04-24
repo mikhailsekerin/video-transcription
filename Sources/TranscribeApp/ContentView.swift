@@ -98,6 +98,7 @@ struct ContentView: View {
             Divider()
             mainContent
         }
+        .frame(minWidth: 800, idealWidth: 1000, minHeight: 600, idealHeight: 700)
         .overlay(
             RoundedRectangle(cornerRadius: 0)
                 .strokeBorder(Color.accentColor, lineWidth: 4)
@@ -540,7 +541,9 @@ struct ContentView: View {
                         HStack {
                             Text(manager.progressLabel)
                             Spacer()
-                            Text(manager.etaLabel)
+                            if useGPU {
+                                Text(manager.etaLabel)
+                            }
                         }
                         .font(.caption2).foregroundStyle(.secondary)
                         .padding(.horizontal)
@@ -611,6 +614,7 @@ struct ContentView: View {
                     .frame(maxWidth: 700, alignment: .leading)
                     .padding()
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -650,6 +654,7 @@ struct ContentView: View {
                             .textSelection(.enabled)
                     }
                     .background(Color(nsColor: .textBackgroundColor))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }

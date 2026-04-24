@@ -24,6 +24,6 @@ cp Sources/TranscribeApp/Resources/AppIcon.icns TranscribeApp.app/Contents/Resou
 cp Sources/TranscribeApp/Resources/Info.plist TranscribeApp.app/Contents/Info.plist
 
 echo "Build complete! Opening app…"
-pkill -x TranscribeApp 2>/dev/null; sleep 0.3
+pkill -x TranscribeApp 2>/dev/null || true; sleep 0.3
 codesign --force --deep --sign - TranscribeApp.app 2>/dev/null
 open TranscribeApp.app
