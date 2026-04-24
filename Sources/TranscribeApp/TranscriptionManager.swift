@@ -291,8 +291,8 @@ class TranscriptionManager: ObservableObject {
 
     private func parseFFmpegChunk(_ text: String) {
         // Capture total duration once from "Duration: HH:MM:SS.ss,"
-        if totalDurationSec == 0, let r = text.range(of: "Duration: ") {
-            let after = text[r.upperBound...]
+        if totalDurationSec == 0, let r = self.log.range(of: "Duration: ") {
+            let after = self.log[r.upperBound...]
             if let comma = after.firstIndex(of: ",") {
                 let tc = String(after[after.startIndex..<comma]).trimmingCharacters(in: .whitespaces)
                 totalDurationSec = parseTimecode(tc) ?? 0
@@ -315,15 +315,44 @@ class TranscriptionManager: ObservableObject {
     }
 
     private func parseWhisperChunk(_ text: String) {
-        // Detect tqdm-style model download before any transcription output
-        if !text.contains(" --> ") {
-            if let pct = parseTqdmPercent(text) {
-                isDownloadingModel = true
-                modelDownloadPercent = pct
-                return
+        if self.isDownloadingModel {
+            var search = text
+            while let r = search.range(of: "%") {
+                let before = search[..<r.lowerBound]
+                let digits = before.reversed().prefix(while: { $0.isNumber || $0 == "." })
+                if let val = Double(String(digits.reversed())), val >= 0, val <= 100 {
+                    self.modelDownloadPercent = Int(val)
+                }
+                search = String(search[r.upperBound...])
             }
-        } else if isDownloadingModel {
-            isDownloadingModel = false
+            return
+        }
+
+        var latestPct: Int? = nil
+        var searchPct = text
+        while let pctRange = searchPct.range(of: "progress =") {
+            let after = searchPct[pctRange.upperBound...]
+            let digits = after.prefix(while: { $0.isNumber || $0.isWhitespace || $0 == "%" })
+            let cleanDigits = digits.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "")
+            if let val = Int(cleanDigits) {
+                latestPct = val
+            }
+            searchPct = String(searchPct[pctRange.upperBound...])
+        }
+
+        if latestPct == nil {
+            latestPct = parseTqdmPercent(text)
+        }
+
+        if let pct = latestPct {
+            self.progress = min(Double(pct) / 100.0, 1.0)
+            if totalDurationSec > 0 {
+                let currentSec = (Double(pct) / 100.0) * totalDurationSec
+                self.progressLabel = formatTimeRange(currentSec, of: totalDurationSec)
+            } else {
+                self.progressLabel = "\(pct)%"
+            }
+            self.updateETA()
         }
 
         guard totalDurationSec > 0 else { return }
