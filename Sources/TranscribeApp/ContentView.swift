@@ -733,10 +733,12 @@ struct ContentView: View {
 
     private func removeFromQueue(_ id: UUID) {
         queue.removeAll { $0.id == id && $0.status != .processing }
+        if viewingItemID == id { viewingItemID = nil }
     }
 
     private func clearFinishedAndPending() {
         queue.removeAll { $0.status != .processing }
+        viewingItemID = nil
         if queue.isEmpty {
             batchFolder = nil
             isBatchMode = false
@@ -780,7 +782,9 @@ struct ContentView: View {
     private func handleStepChange(_ step: TranscriptionStep) {
         switch step {
         case .done:
-            selectedTab = 0
+            // Single-video: auto-show the finished transcript. Batch: don't
+            // yank the user off the Log/SRT tab for every completed item.
+            if !isBatchMode { selectedTab = 0 }
             if let id = currentItemID, let idx = queue.firstIndex(where: { $0.id == id }) {
                 queue[idx].status = .done
                 queue[idx].transcript = manager.markdownContent
@@ -831,6 +835,15 @@ struct ContentView: View {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             return folder
         } catch {
+            // Fallback to ~/Documents so transcripts don't silently vanish
+            // when the source folder is read-only (e.g. external drive, iCloud).
+            let fallback = FileManager.default
+                .urls(for: .documentDirectory, in: .userDomainMask).first?
+                .appendingPathComponent("Transcripts-\(stamp)")
+            if let fallback = fallback,
+               (try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)) != nil {
+                return fallback
+            }
             return nil
         }
     }

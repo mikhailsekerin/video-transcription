@@ -194,10 +194,23 @@ class TranscriptionManager: ObservableObject {
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let filename = "\(ggmlName(for: model)).bin"
         let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)"
+        // Download to .partial then rename, so a cancel/failure never leaves
+        // a truncated .bin that looks valid to the next run. --fail makes curl
+        // exit non-zero on HTTP errors instead of saving the error page.
+        let partialPath = modelPath + ".partial"
+        try? FileManager.default.removeItem(atPath: partialPath)
         appendLog("Downloading \(filename) (one-time, ~\(modelSizeMB(model)) MB)...\n")
         isDownloadingModel = true
         modelDownloadPercent = 0
-        try await runProcess(launchPath: "/usr/bin/curl", arguments: ["-L", "--progress-bar", "-o", modelPath, url])
+        do {
+            try await runProcess(launchPath: "/usr/bin/curl",
+                                 arguments: ["-L", "--fail", "--progress-bar", "-o", partialPath, url])
+        } catch {
+            try? FileManager.default.removeItem(atPath: partialPath)
+            isDownloadingModel = false
+            throw error
+        }
+        try FileManager.default.moveItem(atPath: partialPath, toPath: modelPath)
         isDownloadingModel = false
         return modelPath
     }
