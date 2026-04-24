@@ -243,7 +243,7 @@ final class DependencyChecker: ObservableObject {
             process.executableURL = URL(fileURLWithPath: pipx)
             // --pip-args "--only-binary=av" prevents pip from trying to compile
             // PyAV from source on Intel Macs where the build often fails.
-            process.arguments = ["install", "--pip-args", "--only-binary=av"] + packages
+            process.arguments = ["install", "--pip-args=--only-binary=av"] + packages
 
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
