@@ -23,7 +23,7 @@ struct RootView: View {
     var body: some View {
         Group {
             if checker.phase == .ready {
-                ContentView(ffmpegPath: checker.ffmpegPath, whisperPath: checker.whisperPath)
+                ContentView(ffmpegPath: checker.ffmpegPath, whisperCppPath: checker.whisperCppPath, fasterWhisperPath: checker.fasterWhisperPath)
             } else {
                 SetupView(checker: checker)
             }

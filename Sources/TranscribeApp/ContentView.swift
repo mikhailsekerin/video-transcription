@@ -20,22 +20,23 @@ struct BatchItem: Identifiable, Equatable {
 struct ContentView: View {
     @StateObject private var manager: TranscriptionManager
 
-    init(ffmpegPath: String, whisperPath: String) {
-        _manager = StateObject(wrappedValue: TranscriptionManager(ffmpegPath: ffmpegPath, whisperPath: whisperPath))
+    init(ffmpegPath: String, whisperCppPath: String, fasterWhisperPath: String) {
+        _manager = StateObject(wrappedValue: TranscriptionManager(ffmpegPath: ffmpegPath, whisperCppPath: whisperCppPath, fasterWhisperPath: fasterWhisperPath))
     }
 
     @State private var queue: [BatchItem] = []
     @State private var currentItemID: UUID? = nil
     @State private var batchFolder: URL? = nil
     @State private var isBatchMode: Bool = false
+    @State private var batchComplete: Bool = false
     @State private var combinedTranscript: String = ""
     @State private var viewingItemID: UUID? = nil
 
     @AppStorage("language") private var language = "de"
-    @AppStorage("model") private var model = "medium"
+    @AppStorage("model") private var model = "large"
     @AppStorage("initialPrompt") private var initialPrompt = ""
     @AppStorage("removeFiller") private var removeFiller = false
-    @AppStorage("useGPU") private var useGPU = false
+    @AppStorage("useGPU") private var useGPU = true
     @AppStorage("autoSave") private var autoSave = false
     @AppStorage("trimSilence") private var trimSilence = false
     @AppStorage("recentFiles") private var recentFilesRaw = ""
@@ -107,13 +108,13 @@ struct ContentView: View {
         .fileExporter(
             isPresented: $showMdSavePicker,
             document: PlainTextDocument(content: manager.markdownContent),
-            contentType: .plainText,
+            contentType: UTType(filenameExtension: "md") ?? .plainText,
             defaultFilename: baseFilename + ".md"
         ) { _ in }
         .fileExporter(
             isPresented: $showSrtSavePicker,
             document: PlainTextDocument(content: manager.srtContent),
-            contentType: .plainText,
+            contentType: UTType(filenameExtension: "srt") ?? .plainText,
             defaultFilename: baseFilename + ".srt"
         ) { _ in }
         .onChange(of: manager.step) { newStep in
@@ -299,7 +300,7 @@ struct ContentView: View {
                 explainedToggle(
                     isOn: $useGPU,
                     title: "Use GPU (Apple Silicon)",
-                    subtitle: "Much faster on M-series Macs. Auto-falls back to CPU if the GPU run fails."
+                    subtitle: "Recommended with Large model on M-series Macs. Medium CPU often matches or beats Medium GPU."
                 )
                 explainedToggle(
                     isOn: $trimSilence,
@@ -701,17 +702,34 @@ struct ContentView: View {
     // MARK: – Log View
 
     private var logView: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                Text(manager.log.isEmpty ? "Output will appear here…" : manager.log)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(manager.log.isEmpty ? .secondary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .id("logBottom")
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(manager.log.isEmpty ? "Output will appear here…" : manager.log)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(manager.log.isEmpty ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .id("logBottom")
+                }
+                .onChange(of: manager.log) { _ in
+                    proxy.scrollTo("logBottom", anchor: .bottom)
+                }
             }
-            .onChange(of: manager.log) { _ in
-                proxy.scrollTo("logBottom", anchor: .bottom)
+            if !manager.log.isEmpty {
+                Divider()
+                HStack {
+                    Spacer()
+                    Button("Copy Log") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(manager.log, forType: .string)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
             }
         }
         .background(Color(nsColor: .textBackgroundColor))
@@ -746,11 +764,13 @@ struct ContentView: View {
         guard let firstPending = queue.firstIndex(where: { $0.status == .pending }) else { return }
 
         let pending = queue.filter { $0.status == .pending }.count
-        isBatchMode = pending > 1 || batchFolder != nil
+        let resumingExistingBatch = batchFolder != nil && !batchComplete
+        isBatchMode = pending > 1 || resumingExistingBatch
 
-        if isBatchMode && batchFolder == nil {
+        if isBatchMode && (batchFolder == nil || batchComplete) {
             batchFolder = createBatchFolder(near: queue[firstPending].url)
             combinedTranscript = ""
+            batchComplete = false
         }
 
         runItem(at: firstPending)
@@ -802,6 +822,7 @@ struct ContentView: View {
         if let nextIdx = queue.firstIndex(where: { $0.status == .pending }) {
             runItem(at: nextIdx)
         } else if isBatchMode, let folder = batchFolder {
+            batchComplete = true
             NSWorkspace.shared.activateFileViewerSelecting([folder])
         }
     }
@@ -830,6 +851,9 @@ struct ContentView: View {
 
     private func saveItemOutputs(item: BatchItem) {
         guard let folder = batchFolder else { return }
+        let base = item.url.deletingPathExtension().lastPathComponent
+        let srtURL = folder.appendingPathComponent("\(base).srt")
+        try? item.srt.write(to: srtURL, atomically: true, encoding: .utf8)
         combinedTranscript += markdownSection(for: item)
         let combinedURL = folder.appendingPathComponent("combined-transcript.md")
         try? combinedTranscript.write(to: combinedURL, atomically: true, encoding: .utf8)
@@ -846,7 +870,7 @@ struct ContentView: View {
             header += "- Duration: \(formatSeconds(manager.mediaDurationSec))\n"
         }
         header += "\n"
-        return header + manager.markdownContent + "\n\n---\n\n"
+        return header + item.transcript + "\n\n---\n\n"
     }
 
     private func formatSeconds(_ s: Double) -> String {
@@ -862,12 +886,15 @@ struct ContentView: View {
         guard !providers.isEmpty else { return false }
         var collected: [URL] = []
         let group = DispatchGroup()
+        let lock = NSLock()
         for provider in providers {
             group.enter()
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
                 if let data = item as? Data,
                    let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    lock.lock()
                     collected.append(url)
+                    lock.unlock()
                 }
                 group.leave()
             }
@@ -1043,7 +1070,11 @@ struct OnboardingView: View {
 // MARK: – File Document
 
 struct PlainTextDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.plainText] }
+    static var readableContentTypes: [UTType] {
+        [.plainText,
+         UTType(filenameExtension: "md") ?? .plainText,
+         UTType(filenameExtension: "srt") ?? .plainText]
+    }
     var content: String
 
     init(content: String) { self.content = content }

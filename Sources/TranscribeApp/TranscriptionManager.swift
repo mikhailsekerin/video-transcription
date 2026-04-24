@@ -22,14 +22,16 @@ class TranscriptionManager: ObservableObject {
     @Published var modelDownloadPercent: Int = 0
 
     let ffmpegPath: String
-    let whisperPath: String
+    let whisperCppPath: String
+    let fasterWhisperPath: String
     private var currentProcess: Process?
     private var totalDurationSec: Double = 0
     private var wasCancelled = false
 
-    init(ffmpegPath: String, whisperPath: String) {
+    init(ffmpegPath: String, whisperCppPath: String, fasterWhisperPath: String) {
         self.ffmpegPath = ffmpegPath
-        self.whisperPath = whisperPath
+        self.whisperCppPath = whisperCppPath
+        self.fasterWhisperPath = fasterWhisperPath
     }
 
     func run(videoURL: URL, language: String, model: String, initialPrompt: String = "", removeFiller: Bool = false, useGPU: Bool = false, trimSilence: Bool = false) {
@@ -56,17 +58,7 @@ class TranscriptionManager: ObservableObject {
                 progress = 0
                 progressLabel = ""
                 step = .transcribing
-                var effectiveGPU = useGPU
-                let srt: String
-                do {
-                    srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: effectiveGPU)
-                } catch TranscribeError.srtNotFound where effectiveGPU {
-                    appendLog("\n⚠️ GPU run produced no output — retrying on CPU…\n\n")
-                    effectiveGPU = false
-                    progress = 0
-                    progressLabel = ""
-                    srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: false)
-                }
+                let srt = try await transcribe(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt, useGPU: useGPU)
                 srtContent = srt
                 markdownContent = srtToMarkdown(srt, removeFiller: removeFiller)
                 progress = 1.0
@@ -114,22 +106,52 @@ class TranscriptionManager: ObservableObject {
     // MARK: – Transcription
 
     private func transcribe(wavURL: URL, language: String, model: String, initialPrompt: String, useGPU: Bool) async throws -> String {
+        if useGPU {
+            return try await transcribeWithCpp(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt)
+        } else {
+            return try await transcribeWithFasterWhisper(wavURL: wavURL, language: language, model: model, initialPrompt: initialPrompt)
+        }
+    }
+
+    private func transcribeWithCpp(wavURL: URL, language: String, model: String, initialPrompt: String) async throws -> String {
+        let modelPath = try await ensureWhisperCppModel(model)
+        let outputDir = wavURL.deletingLastPathComponent()
+        let outputPrefix = outputDir.appendingPathComponent(wavURL.deletingPathExtension().lastPathComponent).path
+
+        appendLog("\nTranscribing with Whisper.cpp (Metal GPU)...\n")
+        appendLog("whisper-cli -m ggml-\(model).bin -f \(wavURL.lastPathComponent) -l \(language) --output-srt\n\n")
+
+        var args = ["-m", modelPath, "-f", wavURL.path, "-l", language,
+                    "--output-srt", "-of", outputPrefix,
+                    "--entropy-thold", "2.4",  // drop hallucinated segments above this entropy
+                    "--max-context", "0"]       // don't carry context across segments → fewer loops
+        if !initialPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
+            args += ["--prompt", initialPrompt]
+        }
+        try await runProcess(launchPath: whisperCppPath, arguments: args)
+
+        let srtURL = URL(fileURLWithPath: outputPrefix + ".srt")
+        guard FileManager.default.fileExists(atPath: srtURL.path),
+              let content = try? String(contentsOf: srtURL, encoding: .utf8) else {
+            let dirListing = (try? FileManager.default.contentsOfDirectory(atPath: outputDir.path)) ?? []
+            throw TranscribeError.srtNotFound("\(srtURL.lastPathComponent) — dir: \(dirListing.joined(separator: ", "))")
+        }
+        return content
+    }
+
+    private func transcribeWithFasterWhisper(wavURL: URL, language: String, model: String, initialPrompt: String) async throws -> String {
         let outputDir = wavURL.deletingLastPathComponent()
 
-        let device = useGPU ? "mps" : "cpu"
-        let fp16 = "False"  // MPS doesn't support fp16; CPU never did
+        appendLog("\nTranscribing with Faster-Whisper (CPU)...\n")
+        appendLog("whisper-ctranslate2 \(wavURL.lastPathComponent) --language \(language) --model \(resolvedModel(model)) --device cpu --compute_type int8 --output_format srt\n\n")
 
-        appendLog("\nTranscribing with Whisper...\n")
-        appendLog("whisper \(wavURL.lastPathComponent) --language \(language) --model \(model) --device \(device) --fp16 \(fp16) --temperature 0 --condition_on_previous_text False --output_format srt\n\n")
-
-        var args = [wavURL.path, "--language", language, "--model", model,
-                    "--device", device, "--fp16", fp16, "--temperature", "0",
-                    "--condition_on_previous_text", "False",
+        var args = [wavURL.path, "--language", language, "--model", resolvedModel(model),
+                    "--device", "cpu", "--compute_type", "int8",
                     "--output_format", "srt", "--output_dir", outputDir.path]
         if !initialPrompt.trimmingCharacters(in: .whitespaces).isEmpty {
             args += ["--initial_prompt", initialPrompt]
         }
-        try await runProcess(launchPath: whisperPath, arguments: args)
+        try await runProcess(launchPath: fasterWhisperPath, arguments: args)
 
         let srtURL = outputDir
             .appendingPathComponent(wavURL.deletingPathExtension().lastPathComponent)
@@ -138,12 +160,57 @@ class TranscriptionManager: ObservableObject {
         guard FileManager.default.fileExists(atPath: srtURL.path),
               let content = try? String(contentsOf: srtURL, encoding: .utf8) else {
             let dirListing = (try? FileManager.default.contentsOfDirectory(atPath: outputDir.path)) ?? []
-            let hint = dirListing.isEmpty
-                ? "Whisper produced no output. Check the Log tab for errors."
-                : "Directory contains: \(dirListing.joined(separator: ", "))"
-            throw TranscribeError.srtNotFound("\(srtURL.lastPathComponent) — \(hint)")
+            throw TranscribeError.srtNotFound("\(srtURL.lastPathComponent) — dir: \(dirListing.joined(separator: ", "))")
         }
         return content
+    }
+
+    // MARK: – Whisper.cpp model management
+
+    // Maps picker name → versioned model name used by both whisper-cli and whisper-ctranslate2
+    private func resolvedModel(_ model: String) -> String {
+        switch model {
+        case "large": return "large-v3"
+        default:      return model
+        }
+    }
+
+    // Maps picker name → GGML filename (without .bin)
+    private func ggmlName(for model: String) -> String {
+        "ggml-\(resolvedModel(model))"
+    }
+
+    private func whisperCppModelPath(for model: String) -> String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/whisper/\(ggmlName(for: model)).bin").path
+    }
+
+    private func ensureWhisperCppModel(_ model: String) async throws -> String {
+        let modelPath = whisperCppModelPath(for: model)
+        if FileManager.default.fileExists(atPath: modelPath) {
+            return modelPath
+        }
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cache/whisper")
+        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let filename = "\(ggmlName(for: model)).bin"
+        let url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(filename)"
+        appendLog("Downloading \(filename) (one-time, ~\(modelSizeMB(model)) MB)...\n")
+        isDownloadingModel = true
+        modelDownloadPercent = 0
+        try await runProcess(launchPath: "/usr/bin/curl", arguments: ["-L", "--progress-bar", "-o", modelPath, url])
+        isDownloadingModel = false
+        return modelPath
+    }
+
+    private func modelSizeMB(_ model: String) -> String {
+        switch model {
+        case "tiny":   return "75"
+        case "base":   return "142"
+        case "small":  return "466"
+        case "medium": return "1500"
+        case "large":  return "2900"
+        default:       return "?"
+        }
     }
 
     // MARK: – Process runner
@@ -327,12 +394,20 @@ class TranscriptionManager: ObservableObject {
             if !text.isEmpty { parsed.append((start, end, text)) }
         }
 
-        // Remove consecutive duplicate segments (Whisper hallucination loops)
+        // Remove hallucination loops: drop any segment whose normalised text
+        // already appeared in the last 6 segments (catches non-consecutive repeats too).
+        func norm(_ s: String) -> String {
+            s.trimmingCharacters(in: .punctuationCharacters)
+             .lowercased()
+             .components(separatedBy: .whitespaces)
+             .filter { !$0.isEmpty }
+             .joined(separator: " ")
+        }
         var deduped: [(start: Double, end: Double, text: String)] = []
         for segment in parsed {
-            let norm = segment.text.trimmingCharacters(in: .punctuationCharacters).lowercased()
-            let prev = deduped.last?.text.trimmingCharacters(in: .punctuationCharacters).lowercased()
-            if norm != prev { deduped.append(segment) }
+            let n = norm(segment.text)
+            let window = deduped.suffix(6).map { norm($0.text) }
+            if !window.contains(n) { deduped.append(segment) }
         }
         return deduped
     }
