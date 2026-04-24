@@ -241,9 +241,11 @@ final class DependencyChecker: ObservableObject {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: pipx)
-            // --pip-args "--only-binary=av" prevents pip from trying to compile
-            // PyAV from source on Intel Macs where the build often fails.
-            process.arguments = ["install", "--pip-args=--only-binary=av"] + packages
+            // --prefer-binary tells pip to pick wheel-available versions over
+            // sdist-only versions, avoiding PyAV source builds on Intel Macs
+            // without over-constraining the resolver (which --only-binary=av
+            // did and caused ResolutionImpossible on some setups).
+            process.arguments = ["install", "--pip-args=--prefer-binary"] + packages
 
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
