@@ -112,6 +112,10 @@ struct SetupView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if !checker.installLog.isEmpty {
+                    InstallLogView(log: checker.installLog)
+                }
+
                 Button {
                     Task { await checker.installMissing() }
                 } label: {

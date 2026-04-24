@@ -47,8 +47,6 @@ struct ContentView: View {
     @State private var isWindowDropTargeted = false
     @State private var isDropZoneHovered = false
     @State private var showFilePicker = false
-    @State private var showSrtSavePicker = false
-    @State private var showMdSavePicker = false
     @State private var selectedTab = 0
 
     private var recentFiles: [URL] {
@@ -105,18 +103,6 @@ struct ContentView: View {
                 enqueue(urls)
             }
         }
-        .fileExporter(
-            isPresented: $showMdSavePicker,
-            document: PlainTextDocument(content: manager.markdownContent),
-            contentType: UTType(filenameExtension: "md") ?? .plainText,
-            defaultFilename: baseFilename + ".md"
-        ) { _ in }
-        .fileExporter(
-            isPresented: $showSrtSavePicker,
-            document: PlainTextDocument(content: manager.srtContent),
-            contentType: UTType(filenameExtension: "srt") ?? .plainText,
-            defaultFilename: baseFilename + ".srt"
-        ) { _ in }
         .onChange(of: manager.step) { newStep in
             handleStepChange(newStep)
         }
@@ -323,7 +309,7 @@ struct ContentView: View {
             if case .done = manager.step, !isBatchMode {
                 VStack(spacing: 8) {
                     Button {
-                        showMdSavePicker = true
+                        saveMd()
                     } label: {
                         Label("Save Markdown (.md)", systemImage: "doc.text")
                             .frame(maxWidth: .infinity)
@@ -331,7 +317,7 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
 
                     Button {
-                        showSrtSavePicker = true
+                        saveSrt()
                     } label: {
                         Label("Save Subtitles (.srt)", systemImage: "captions.bubble")
                             .frame(maxWidth: .infinity)
@@ -940,6 +926,26 @@ struct ContentView: View {
         recentFilesRaw = list.map(\.absoluteString).joined(separator: "\n")
     }
 
+    private func saveMd() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        panel.nameFieldStringValue = baseFilename + ".md"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? manager.markdownContent.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
+    private func saveSrt() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
+        panel.nameFieldStringValue = baseFilename + ".srt"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            try? manager.srtContent.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     private func writeOutputs(next url: URL) {
         let base = url.deletingPathExtension()
         let md = base.appendingPathExtension("md")
@@ -1067,24 +1073,3 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: – File Document
-
-struct PlainTextDocument: FileDocument {
-    static var readableContentTypes: [UTType] {
-        [.plainText,
-         UTType(filenameExtension: "md") ?? .plainText,
-         UTType(filenameExtension: "srt") ?? .plainText]
-    }
-    var content: String
-
-    init(content: String) { self.content = content }
-    init(configuration: ReadConfiguration) throws {
-        content = String(data: configuration.file.regularFileContents ?? Data(), encoding: .utf8) ?? ""
-    }
-    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
-        guard let data = content.data(using: .utf8) else {
-            throw NSError(domain: "FileWriteError", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not encode content as UTF-8"])
-        }
-        return FileWrapper(regularFileWithContents: data)
-    }
-}
