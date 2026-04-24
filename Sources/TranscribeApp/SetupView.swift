@@ -67,7 +67,7 @@ struct SetupView: View {
             EmptyView()
 
         case .needsHomebrew:
-            HomebrewMissingPanel()
+            HomebrewMissingPanel(checker: checker)
 
         case .needsSetup:
             VStack(spacing: 12) {
@@ -172,6 +172,7 @@ private struct DependencyRow: View {
 // MARK: – Homebrew Missing Panel
 
 private struct HomebrewMissingPanel: View {
+    @ObservedObject var checker: DependencyChecker
     @State private var copied = false
 
     var body: some View {
@@ -220,7 +221,7 @@ private struct HomebrewMissingPanel: View {
                 .foregroundStyle(.secondary)
 
             Button {
-                Task { await DependencyCheckerAccess.shared?.checkDependencies() }
+                Task { await checker.checkDependencies() }
             } label: {
                 Label("I've Installed Homebrew — Check Again", systemImage: "arrow.clockwise")
                     .frame(maxWidth: .infinity)
@@ -260,9 +261,4 @@ private struct InstallLogView: View {
     }
 }
 
-// MARK: – Workaround for HomebrewMissingPanel needing checker access
-
-// The panel is a private struct; it uses this thin wrapper to call back to the checker.
-final class DependencyCheckerAccess {
-    static weak var shared: DependencyChecker?
-}
+// MARK: - Workaround removed

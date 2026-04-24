@@ -51,9 +51,14 @@ struct ContentView: View {
     @State private var showFilePicker = false
     @State private var selectedTab = 0
 
-    private var recentFiles: [URL] {
-        guard let list = try? JSONDecoder().decode([Data].self, from: recentFilesData) else { return [] }
-        return list.compactMap { bookmark in
+    @State private var recentFiles: [URL] = []
+
+    private func updateRecentFiles() {
+        guard let list = try? JSONDecoder().decode([Data].self, from: recentFilesData) else {
+            recentFiles = []
+            return
+        }
+        recentFiles = list.compactMap { bookmark in
             var isStale = false
             return try? URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
         }
@@ -130,6 +135,10 @@ struct ContentView: View {
         .onAppear {
             if !hasSeenOnboarding { showOnboarding = true }
             if !isAppleSilicon { useGPU = false }
+            updateRecentFiles()
+        }
+        .onChange(of: recentFilesData) { _ in
+            updateRecentFiles()
         }
     }
 
@@ -158,6 +167,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderless)
             .help("How it works")
+            .accessibilityLabel("Help")
 
             if !recentFiles.isEmpty {
                 Menu {
@@ -172,6 +182,7 @@ struct ContentView: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .help("Recent videos")
+                .accessibilityLabel("Recent Videos")
                 .disabled(isRunning)
             }
 
@@ -446,6 +457,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.blue)
                 .help("Retry")
+                .accessibilityLabel("Retry")
             } else if item.status != .processing {
                 Button {
                     removeFromQueue(item.id)
@@ -455,6 +467,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel("Remove from queue")
             }
         }
         .padding(.horizontal, 6)

@@ -30,7 +30,6 @@ struct RootView: View {
         }
         .task {
             cleanupOrphanedTempFolders()
-            DependencyCheckerAccess.shared = checker
             if checker.phase == .idle {
                 await checker.checkDependencies()
             }
