@@ -23,4 +23,6 @@ cp "$BINARY" TranscribeApp.app/Contents/MacOS/TranscribeApp
 cp Sources/TranscribeApp/Resources/AppIcon.icns TranscribeApp.app/Contents/Resources/AppIcon.icns
 
 echo "Build complete! Opening app…"
+pkill -x TranscribeApp 2>/dev/null; sleep 0.3
+codesign --force --deep --sign - TranscribeApp.app 2>/dev/null
 open TranscribeApp.app

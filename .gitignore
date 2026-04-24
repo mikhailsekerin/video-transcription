@@ -23,3 +23,5 @@ Downloads/
 
 # VS Code
 .vscode/
+dmg-root/
+*.dmg
