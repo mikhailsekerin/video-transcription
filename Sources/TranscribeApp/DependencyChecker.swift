@@ -85,6 +85,8 @@ final class DependencyChecker: ObservableObject {
             "/opt/homebrew/bin/whisper-ctranslate2",
             "/usr/local/bin/whisper-ctranslate2",
             "\(home)/.local/bin/whisper-ctranslate2",
+            // Direct venv path — present even when the ~/.local/bin symlink wasn't created
+            "\(home)/.local/pipx/venvs/whisper-ctranslate2/bin/whisper-ctranslate2",
         ])
 
         // Yield so the .checking spinner renders before we replace it
@@ -245,10 +247,17 @@ final class DependencyChecker: ObservableObject {
             // sdist-only versions, avoiding PyAV source builds on Intel Macs
             // without over-constraining the resolver (which --only-binary=av
             // did and caused ResolutionImpossible on some setups).
-            process.arguments = ["install", "--pip-args=--prefer-binary"] + packages
+            // --force reinstalls cleanly if a previous failed run left a partial
+            // venv (without it, pipx exits 0 saying "already installed" and the
+            // binary never appears).
+            process.arguments = ["install", "--force", "--pip-args=--prefer-binary"] + packages
 
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+            env["HOME"] = home
+            env["PIPX_HOME"] = "\(home)/.local/pipx"
+            env["PIPX_BIN_DIR"] = "\(home)/.local/bin"
             process.environment = env
 
             let pipe = Pipe()
