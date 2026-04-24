@@ -201,6 +201,9 @@ final class DependencyChecker: ObservableObject {
 
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+            env["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+            env["HOMEBREW_NO_ANALYTICS"] = "1"
+            env["HOME"] = FileManager.default.homeDirectoryForCurrentUser.path
             process.environment = env
 
             let pipe = Pipe()
