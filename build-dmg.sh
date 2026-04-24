@@ -18,6 +18,7 @@ mkdir -p TranscribeApp.app/Contents/MacOS
 mkdir -p TranscribeApp.app/Contents/Resources
 cp TranscribeApp-universal TranscribeApp.app/Contents/MacOS/TranscribeApp
 cp Sources/TranscribeApp/Resources/AppIcon.icns TranscribeApp.app/Contents/Resources/AppIcon.icns
+cp Sources/TranscribeApp/Resources/Info.plist TranscribeApp.app/Contents/Info.plist
 rm TranscribeApp-universal
 
 echo "Signing…"

@@ -214,7 +214,11 @@ final class DependencyChecker: ObservableObject {
 
             pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
-                if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                if let text = String(data: data, encoding: .utf8) {
                     Task { @MainActor [weak self] in
                         self?.appendLog(text)
                     }
@@ -266,7 +270,11 @@ final class DependencyChecker: ObservableObject {
 
             pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
-                if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                if let text = String(data: data, encoding: .utf8) {
                     Task { @MainActor [weak self] in
                         self?.appendLog(text)
                     }

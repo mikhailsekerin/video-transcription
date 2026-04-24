@@ -29,9 +29,20 @@ struct RootView: View {
             }
         }
         .task {
+            cleanupOrphanedTempFolders()
             DependencyCheckerAccess.shared = checker
             if checker.phase == .idle {
                 await checker.checkDependencies()
+            }
+        }
+    }
+
+    private func cleanupOrphanedTempFolders() {
+        let tempDir = FileManager.default.temporaryDirectory
+        guard let contents = try? FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil) else { return }
+        for url in contents {
+            if url.lastPathComponent.hasPrefix("TranscribeApp-") {
+                try? FileManager.default.removeItem(at: url)
             }
         }
     }

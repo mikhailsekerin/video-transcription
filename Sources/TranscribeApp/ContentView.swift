@@ -39,10 +39,12 @@ struct ContentView: View {
     @AppStorage("useGPU") private var useGPU = true
     @AppStorage("autoSave") private var autoSave = false
     @AppStorage("trimSilence") private var trimSilence = false
-    @AppStorage("recentFiles") private var recentFilesRaw = ""
+    @AppStorage("recentFilesData") private var recentFilesData: Data = Data()
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
     @State private var showOnboarding = false
     @State private var transcriptCopied = false
+    @State private var mdSaved = false
+    @State private var srtSaved = false
     @State private var isDropTargeted = false
     @State private var isWindowDropTargeted = false
     @State private var isDropZoneHovered = false
@@ -50,7 +52,11 @@ struct ContentView: View {
     @State private var selectedTab = 0
 
     private var recentFiles: [URL] {
-        recentFilesRaw.split(separator: "\n").compactMap { URL(string: String($0)) }
+        guard let list = try? JSONDecoder().decode([Data].self, from: recentFilesData) else { return [] }
+        return list.compactMap { bookmark in
+            var isStale = false
+            return try? URL(resolvingBookmarkData: bookmark, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &isStale)
+        }
     }
 
     private var isRunning: Bool {
@@ -67,6 +73,14 @@ struct ContentView: View {
 
     private var pendingCount: Int {
         queue.filter { $0.status == .pending }.count
+    }
+
+    private var isAppleSilicon: Bool {
+        #if arch(arm64)
+        return true
+        #else
+        return false
+        #endif
     }
 
     private var isBatchRunning: Bool {
@@ -114,6 +128,7 @@ struct ContentView: View {
         }
         .onAppear {
             if !hasSeenOnboarding { showOnboarding = true }
+            if !isAppleSilicon { useGPU = false }
         }
     }
 
@@ -149,7 +164,7 @@ struct ContentView: View {
                         Button(url.lastPathComponent) { enqueue([url]) }
                     }
                     Divider()
-                    Button("Clear Recent") { recentFilesRaw = "" }
+                    Button("Clear Recent") { recentFilesData = Data() }
                 } label: {
                     Image(systemName: "clock.arrow.circlepath")
                 }
@@ -205,7 +220,6 @@ struct ContentView: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
         .background(
-            // Hidden ⌘O shortcut for opening the file picker
             Button("") { if !isRunning { showFilePicker = true } }
                 .keyboardShortcut("o", modifiers: .command)
                 .opacity(0)
@@ -239,7 +253,7 @@ struct ContentView: View {
                 .frame(minWidth: 240, maxWidth: 320)
 
             TabView(selection: $selectedTab) {
-                transcriptView
+                transcriptView()
                     .tabItem { Label("Transcript", systemImage: "doc.text") }
                     .tag(0)
                 srtView
@@ -262,7 +276,6 @@ struct ContentView: View {
                 queueList
             }
 
-            // Context hint
             VStack(alignment: .leading, spacing: 4) {
                 Text("Context hint (optional)")
                     .font(.caption2)
@@ -286,7 +299,8 @@ struct ContentView: View {
                 explainedToggle(
                     isOn: $useGPU,
                     title: "Use GPU (Apple Silicon)",
-                    subtitle: "Recommended with Large model on M-series Macs. Medium CPU often matches or beats Medium GPU."
+                    subtitle: isAppleSilicon ? "Recommended with Large model on M-series Macs. Medium CPU often matches or beats Medium GPU." : "Not supported on Intel Macs. Uses CPU fallback automatically.",
+                    forceDisabled: !isAppleSilicon
                 )
                 explainedToggle(
                     isOn: $trimSilence,
@@ -301,28 +315,17 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Status + progress
             statusBadge
             if isRunning { progressBar }
 
-            // Save buttons (apply to most-recent completed item)
             if case .done = manager.step, !isBatchMode {
                 VStack(spacing: 8) {
-                    Button {
-                        saveMd()
-                    } label: {
-                        Label("Save Markdown (.md)", systemImage: "doc.text")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button {
-                        saveSrt()
-                    } label: {
-                        Label("Save Subtitles (.srt)", systemImage: "captions.bubble")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
+                    Button(mdSaved ? "✅ Saved" : "Save Markdown (.md)") { saveMd() }
+                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity)
+                    Button(srtSaved ? "✅ Saved" : "Save Subtitles (.srt)") { saveSrt() }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
                 }
             }
 
@@ -427,13 +430,22 @@ struct ContentView: View {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if case .failed(let msg) = item.status {
-                Image(systemName: "exclamationmark.circle")
-                    .foregroundStyle(.red)
-                    .help(msg)
-            }
-            if item.status != .processing {
+            
+            Spacer()
+            
+            if case .failed = item.status {
+                Button {
+                    if let idx = queue.firstIndex(where: { $0.id == item.id }) {
+                        queue[idx].status = .pending
+                        if !isRunning { startBatch() }
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.blue)
+                .help("Retry")
+            } else if item.status != .processing {
                 Button {
                     removeFromQueue(item.id)
                 } label: {
@@ -481,7 +493,7 @@ struct ContentView: View {
                 .foregroundStyle(.green)
                 .font(.caption)
         case .failed:
-            Image(systemName: "xmark.circle.fill")
+            Image(systemName: "exclamationmark.circle.fill")
                 .foregroundStyle(.red)
                 .font(.caption)
         }
@@ -514,55 +526,30 @@ struct ContentView: View {
     @ViewBuilder
     private var progressBar: some View {
         VStack(spacing: 6) {
-            if manager.isDownloadingModel {
-                ProgressView(value: Double(manager.modelDownloadPercent) / 100)
-                    .progressViewStyle(.linear)
-            } else if manager.progress > 0 {
-                ProgressView(value: manager.progress)
-                    .progressViewStyle(.linear)
-            } else {
-                ProgressView()
-                    .scaleEffect(0.75)
-                    .frame(maxWidth: .infinity)
-            }
-            HStack {
-                Text(progressDetailLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if manager.isDownloadingModel {
-                    Text("\(manager.modelDownloadPercent)%")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                } else if manager.progress > 0 {
-                    if !manager.progressLabel.isEmpty {
-                        Text(manager.progressLabel)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundStyle(.secondary)
+            if isRunning && currentItem != nil {
+                VStack {
+                    if manager.isDownloadingModel {
+                        ProgressView(value: Double(manager.modelDownloadPercent), total: 100)
+                            .padding(.horizontal)
+                        Text("Downloading large model (one-time)... \(manager.modelDownloadPercent)%")
+                            .font(.caption2).foregroundStyle(.secondary)
                     } else {
-                        Text("\(Int(manager.progress * 100))%")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        ProgressView(value: manager.progress)
+                            .progressViewStyle(.linear)
+                            .padding(.horizontal)
+                        HStack {
+                            Text(manager.progressLabel)
+                            Spacer()
+                            Text(manager.etaLabel)
+                        }
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .padding(.horizontal)
                     }
                 }
             }
         }
         .padding(.horizontal, 2)
         .animation(.easeInOut(duration: 0.2), value: manager.progress)
-    }
-
-    private var progressDetailLabel: String {
-        if manager.isDownloadingModel {
-            return "Downloading \(model) model (one-time)…"
-        }
-        switch manager.step {
-        case .converting:
-            return manager.progress > 0 ? "Extracting audio…" : "Starting FFmpeg…"
-        case .transcribing:
-            return manager.progress > 0 ? "Transcribing audio…" : "Loading Whisper model, please wait…"
-        default:
-            return ""
-        }
     }
 
     // MARK: – Transcript View
@@ -596,50 +583,33 @@ struct ContentView: View {
         return manager.srtContent
     }
 
-    private var transcriptView: some View {
-        Group {
-            if displayedTranscript.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: isRunning ? "waveform" : "doc.text")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary)
-                    Text(isRunning ? "Transcription in progress…" : "Transcript will appear here")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer()
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(displayedTranscript, forType: .string)
-                            transcriptCopied = true
-                            Task {
-                                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                                transcriptCopied = false
-                            }
-                        } label: {
-                            Label(transcriptCopied ? "Copied!" : "Copy", systemImage: transcriptCopied ? "checkmark" : "doc.on.doc")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(transcriptCopied ? .green : .secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .animation(.easeInOut(duration: 0.15), value: transcriptCopied)
-                    }
-                    Divider()
-                    ScrollView {
-                        Text(displayedTranscript)
-                            .font(.body)
-                            .lineSpacing(4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
-                            .textSelection(.enabled)
-                    }
-                    .background(Color(nsColor: .textBackgroundColor))
-                }
+    @ViewBuilder
+    private func transcriptView() -> some View {
+        if isRunning && displayedTranscript.isEmpty {
+            VStack(spacing: 20) {
+                Image(systemName: manager.step == .converting ? "waveform" : "waveform.and.mic")
+                    .font(.system(size: 60))
+                    .foregroundStyle(manager.step == .converting ? Color.secondary : Color.accentColor)
+                Text(manager.step == .converting ? "Extracting audio..." : "Recognizing speech...")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if displayedTranscript.isEmpty {
+            VStack(spacing: 16) {
+                Image(systemName: "text.document")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.tertiary)
+                Text("Transcript will appear here.")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                Text(LocalizedStringKey(displayedTranscript))
+                    .textSelection(.enabled)
+                    .lineSpacing(6)
+                    .frame(maxWidth: 700, alignment: .leading)
+                    .padding()
             }
         }
     }
@@ -706,9 +676,13 @@ struct ContentView: View {
                 Divider()
                 HStack {
                     Spacer()
-                    Button("Copy Log") {
+                    Button(mdSaved ? "✅ Saved" : "Save Markdown") { saveMd() }
+                        .disabled(displayedTranscript.isEmpty)
+                    Button(transcriptCopied ? "Copied!" : "Copy Log") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(manager.log, forType: .string)
+                        transcriptCopied = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { transcriptCopied = false }
                     }
                     .buttonStyle(.plain)
                     .font(.caption)
@@ -782,8 +756,6 @@ struct ContentView: View {
     private func handleStepChange(_ step: TranscriptionStep) {
         switch step {
         case .done:
-            // Single-video: auto-show the finished transcript. Batch: don't
-            // yank the user off the Log/SRT tab for every completed item.
             if !isBatchMode { selectedTab = 0 }
             if let id = currentItemID, let idx = queue.firstIndex(where: { $0.id == id }) {
                 queue[idx].status = .done
@@ -823,7 +795,6 @@ struct ContentView: View {
             queue[idx].status = .pending
         }
         currentItemID = nil
-        // Keep batchFolder and isBatchMode so user can resume into the same folder
     }
 
     private func createBatchFolder(near url: URL) -> URL? {
@@ -835,8 +806,6 @@ struct ContentView: View {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             return folder
         } catch {
-            // Fallback to ~/Documents so transcripts don't silently vanish
-            // when the source folder is read-only (e.g. external drive, iCloud).
             let fallback = FileManager.default
                 .urls(for: .documentDirectory, in: .userDomainMask).first?
                 .appendingPathComponent("Transcripts-\(stamp)")
@@ -910,14 +879,8 @@ struct ContentView: View {
          UTType(filenameExtension: "webm") ?? .movie]
     }
 
-    private var baseFilename: String {
-        currentItem?.url.deletingPathExtension().lastPathComponent
-            ?? queue.last?.url.deletingPathExtension().lastPathComponent
-            ?? "transcript"
-    }
-
     @ViewBuilder
-    private func explainedToggle(isOn: Binding<Bool>, title: String, subtitle: String) -> some View {
+    private func explainedToggle(isOn: Binding<Bool>, title: String, subtitle: String, forceDisabled: Bool = false) -> some View {
         Toggle(isOn: isOn) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -929,33 +892,46 @@ struct ContentView: View {
             }
         }
         .toggleStyle(.checkbox)
-        .disabled(isRunning)
+        .disabled(isRunning || forceDisabled)
     }
 
     private func addRecent(_ url: URL) {
-        var list = recentFiles.filter { $0 != url }
-        list.insert(url, at: 0)
+        guard let bookmark = try? url.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil) else { return }
+        var list: [Data] = []
+        if let existing = try? JSONDecoder().decode([Data].self, from: recentFilesData) {
+            list = existing
+        }
+        list.removeAll { data in
+            var stale = false
+            let resolved = try? URL(resolvingBookmarkData: data, options: .withSecurityScope, relativeTo: nil, bookmarkDataIsStale: &stale)
+            return resolved == url
+        }
+        list.insert(bookmark, at: 0)
         if list.count > 5 { list = Array(list.prefix(5)) }
-        recentFilesRaw = list.map(\.absoluteString).joined(separator: "\n")
+        if let encoded = try? JSONEncoder().encode(list) {
+            recentFilesData = encoded
+        }
     }
 
     private func saveMd() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
-        panel.nameFieldStringValue = baseFilename + ".md"
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            try? manager.markdownContent.write(to: url, atomically: true, encoding: .utf8)
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = (currentItemID.map { id in queue.first { $0.id == id }?.url.deletingPathExtension().appendingPathExtension("md").lastPathComponent ?? "transcript.md" }) ?? "transcript.md"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? displayedTranscript.write(to: url, atomically: true, encoding: .utf8)
+            mdSaved = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { mdSaved = false }
         }
     }
 
     private func saveSrt() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
-        panel.nameFieldStringValue = baseFilename + ".srt"
-        panel.begin { response in
-            guard response == .OK, let url = panel.url else { return }
-            try? manager.srtContent.write(to: url, atomically: true, encoding: .utf8)
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = (currentItemID.map { id in queue.first { $0.id == id }?.url.deletingPathExtension().appendingPathExtension("srt").lastPathComponent ?? "transcript.srt" }) ?? "transcript.srt"
+        if panel.runModal() == .OK, let url = panel.url {
+            try? displayedSrt.write(to: url, atomically: true, encoding: .utf8)
+            srtSaved = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { srtSaved = false }
         }
     }
 

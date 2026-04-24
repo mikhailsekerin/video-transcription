@@ -18,6 +18,7 @@ class TranscriptionManager: ObservableObject {
     @Published var mediaDurationSec: Double = 0
     @Published var progress: Double = 0        // 0.0–1.0
     @Published var progressLabel: String = ""  // e.g. "0:30 / 1:23"
+    @Published var etaLabel: String = ""       // e.g. "ETA: 3m 15s"
     @Published var isDownloadingModel = false
     @Published var modelDownloadPercent: Int = 0
 
@@ -26,6 +27,7 @@ class TranscriptionManager: ObservableObject {
     let fasterWhisperPath: String
     private var currentProcess: Process?
     private var totalDurationSec: Double = 0
+    private var processStartTime: Date? = nil
     private var wasCancelled = false
 
     init(ffmpegPath: String, whisperCppPath: String, fasterWhisperPath: String) {
@@ -40,11 +42,13 @@ class TranscriptionManager: ObservableObject {
         markdownContent = ""
         progress = 0
         progressLabel = ""
+        etaLabel = ""
         totalDurationSec = 0
         mediaDurationSec = 0
         isDownloadingModel = false
         modelDownloadPercent = 0
         wasCancelled = false
+        processStartTime = Date()
         step = .converting
 
         let workDir = FileManager.default.temporaryDirectory
@@ -79,6 +83,7 @@ class TranscriptionManager: ObservableObject {
         step = .idle
         progress = 0
         progressLabel = ""
+        etaLabel = ""
         appendLog("\nCancelled.")
     }
 
@@ -244,7 +249,11 @@ class TranscriptionManager: ObservableObject {
 
             pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
                 let data = handle.availableData
-                if !data.isEmpty, let text = String(data: data, encoding: .utf8) {
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+                if let text = String(data: data, encoding: .utf8) {
                     Task { @MainActor [weak self] in
                         self?.appendLog(text)
                         self?.parseProgressChunk(text)
@@ -301,6 +310,7 @@ class TranscriptionManager: ObservableObject {
         if let t = latestT, totalDurationSec > 0 {
             progress = min(t / totalDurationSec, 1.0)
             progressLabel = formatTimeRange(t, of: totalDurationSec)
+            updateETA()
         }
     }
 
@@ -329,6 +339,7 @@ class TranscriptionManager: ObservableObject {
         if let t = latestEnd {
             progress = min(t / totalDurationSec, 1.0)
             progressLabel = formatTimeRange(t, of: totalDurationSec)
+            updateETA()
         }
     }
 
@@ -356,6 +367,27 @@ class TranscriptionManager: ObservableObject {
               let m = Double(parts[1]),
               let sec = Double(parts[2]) else { return nil }
         return h * 3600 + m * 60 + sec
+    }
+
+    private func updateETA() {
+        guard progress > 0, let start = processStartTime else { return }
+        let elapsed = Date().timeIntervalSince(start)
+        let totalEstimated = elapsed / progress
+        let remaining = totalEstimated - elapsed
+        if remaining > 0 && remaining < 86400 {
+            let h = Int(remaining) / 3600
+            let m = (Int(remaining) % 3600) / 60
+            let s = Int(remaining) % 60
+            if h > 0 {
+                etaLabel = "ETA: \(h)h \(m)m"
+            } else if m > 0 {
+                etaLabel = "ETA: \(m)m \(s)s"
+            } else {
+                etaLabel = "ETA: \(s)s"
+            }
+        } else {
+            etaLabel = ""
+        }
     }
 
     private func formatTimeRange(_ current: Double, of total: Double) -> String {
