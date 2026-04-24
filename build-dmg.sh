@@ -2,49 +2,33 @@
 set -e
 cd "$(dirname "$0")"
 
-APP_NAME="VTT"
-DMG_NAME="VTT-VideoTranscriber.dmg"
-APP_BUNDLE="TranscribeApp.app"
+echo "Building arm64…"
+swift build -c release --arch arm64
 
-echo "▸ Building release binary…"
-swift build -c release
+echo "Building x86_64…"
+swift build -c release --arch x86_64
 
-echo "▸ Updating app bundle…"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
+echo "Creating universal binary…"
+lipo -create \
+  .build/arm64-apple-macosx/release/TranscribeApp \
+  .build/x86_64-apple-macosx/release/TranscribeApp \
+  -output TranscribeApp-universal
 
-# Find the binary in any architecture-specific build folder
-BINARY=$(find .build -name "TranscribeApp" -type f -path "*/release/*" 2>/dev/null | head -1)
-if [ -z "$BINARY" ]; then
-    echo "❌ Error: Release build produced no binary"
-    exit 1
-fi
+mkdir -p TranscribeApp.app/Contents/MacOS
+mkdir -p TranscribeApp.app/Contents/Resources
+cp TranscribeApp-universal TranscribeApp.app/Contents/MacOS/TranscribeApp
+cp Sources/TranscribeApp/Resources/AppIcon.icns TranscribeApp.app/Contents/Resources/AppIcon.icns
+rm TranscribeApp-universal
 
-cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/TranscribeApp"
-cp Sources/TranscribeApp/Resources/AppIcon.icns "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+echo "Signing…"
+codesign --force --deep --sign - TranscribeApp.app
 
-echo "▸ Code signing (ad-hoc)…"
-codesign --sign - --force --deep "$APP_BUNDLE"
+echo "Creating DMG…"
+rm -rf dmg-root
+mkdir -p dmg-root
+cp -R TranscribeApp.app dmg-root/
+ln -s /Applications dmg-root/Applications
+hdiutil create -volname "Video Transcriber" -srcfolder dmg-root -ov -format UDZO -o VideoTranscriber.dmg
+rm -rf dmg-root
 
-echo "▸ Creating DMG…"
-rm -f "$DMG_NAME"
-
-# Staging folder: app + Applications symlink
-STAGING=$(mktemp -d)
-cp -R "$APP_BUNDLE" "$STAGING/$APP_NAME.app"
-ln -s /Applications "$STAGING/Applications"
-
-hdiutil create \
-  -volname "$APP_NAME – Video Transcriber" \
-  -srcfolder "$STAGING" \
-  -ov \
-  -format UDZO \
-  "$DMG_NAME"
-
-rm -rf "$STAGING"
-
-echo ""
-echo "✓ Done: $DMG_NAME"
-echo ""
-echo "Note: colleagues need to right-click → Open the first time"
-echo "      (Gatekeeper warning due to ad-hoc signing)."
+echo "✅ Done: $(du -sh VideoTranscriber.dmg | cut -f1) — VideoTranscriber.dmg"
